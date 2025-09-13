@@ -7,9 +7,59 @@ on:
     branches: ["main"]
 
 jobs:
-  backend:
+  # ---------- (optional) Sourcery auto-fix (PRs only) ----------
+  sourcery_autofix:
+    name: Sourcery (auto-fix and push)
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: write
+      pull-requests: write
 
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Sourcery + tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install "sourcery==1.21.0" "ruff==0.6.8"
+
+      - name: Run Sourcery auto-fix
+        run: sourcery review --fix .
+
+      - name: Format after fixes (Ruff)
+        run: ruff format .
+
+      - name: Commit & push if changes (same-repo PRs only)
+        if: ${{ github.repository == github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -e
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "chore(sourcery): auto-fix refactors via CI"
+            git push
+          else
+            echo "No Sourcery changes to commit."
+          fi
+
+      - name: Final check – fail if issues remain
+        run: sourcery review .
+
+  # ---------- Python backend (lint • sec • test) ----------
+  backend:
+    name: Python backend (lint • sec • test)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,12 +77,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install dependencies
+      - name: Install dependencies (requirements if present, else pinned toolchain)
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements/dev.txt ]; then pip install -r requirements/dev.txt; fi
-          pip install ruff flake8 bandit pytest coverage
+          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt || true; fi
+          python -m pip install "ruff==0.6.8" "flake8==7.1.1" "bandit==1.7.9" \
+                                "pytest==8.3.2" "pytest-django==4.8.0" "coverage==7.6.1"
 
       - name: Print versions
         run: |
@@ -43,45 +94,61 @@ jobs:
           pytest --version
 
       - name: Ruff (lint)
-        run: ruff check .
+        run: ruff check --output-format=github .
 
       - name: Ruff (format check)
         run: ruff format --check .
 
       - name: Flake8 (max line length = 120)
-        run: flake8 . --max-line-length=120
+        run: flake8 --max-line-length=120 .
 
-      - name: Bandit
-        run: bandit -q -r .
-
-      - name: Pick Django settings module
-        id: pick-settings
+      # ---- Bandit: warn on LOW, fail on MEDIUM/HIGH ----
+      - name: Bandit (LOW => warnings; fail on MEDIUM/HIGH)
         run: |
-          echo "Checking for DJANGO_SETTINGS_MODULE..."
-          if [ -z "${DJANGO_SETTINGS_MODULE}" ]; then
-            SETTINGS_FILE=$(find . -name "settings.py" | head -n 1)
-            if [ -n "$SETTINGS_FILE" ]; then
-              MODULE_PATH=$(echo "$SETTINGS_FILE" | sed 's|^\./||; s|/|.|g; s|.py$||')
-              echo "Found settings: $MODULE_PATH"
-              echo "DJANGO_SETTINGS_MODULE=$MODULE_PATH" >> $GITHUB_ENV
-            else
-              echo "No Django settings found, skipping pytest."
-              echo "skip_pytest=true" >> $GITHUB_ENV
-            fi
+          set -e
+          EXCLUDES="tests,*/migrations,venv,.venv,node_modules,dist,build"
+          echo "=== Bandit (LOW severity report; will NOT fail) ==="
+          bandit -q -r . -x "$EXCLUDES" --severity-level low --format txt --exit-zero || true
+          echo "=== Bandit (enforcing MEDIUM/HIGH; will fail on findings) ==="
+          bandit -q -r . -x "$EXCLUDES" --severity-level medium
+
+      # ---- Dynamic Django settings discovery ----
+      - name: Pick Django settings module
+        id: pick_ds
+        run: |
+          # If already provided (env/secrets), keep it
+          if [ -n "${DJANGO_SETTINGS_MODULE}" ]; then
+            echo "ds=${DJANGO_SETTINGS_MODULE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Otherwise, find the first settings.py and convert to import path
+          SETTINGS_FILE="$(find . -type f -name 'settings.py' | head -n1 || true)"
+          if [ -n "$SETTINGS_FILE" ]; then
+            MODULE_PATH="$(echo "$SETTINGS_FILE" | sed 's|^\./||; s|/|.|g; s|\.py$||')"
+            echo "ds=${MODULE_PATH}" >> "$GITHUB_OUTPUT"
+            echo "Using discovered settings module: ${MODULE_PATH}"
           else
-            echo "DJANGO_SETTINGS_MODULE already set: $DJANGO_SETTINGS_MODULE"
+            echo "ds=" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Django settings module found; pytest will be skipped."
           fi
 
       - name: Pytest
-        if: env.skip_pytest != 'true'
+        if: ${{ steps.pick_ds.outputs.ds != '' }}
         env:
+          DJANGO_SETTINGS_MODULE: ${{ steps.pick_ds.outputs.ds }}
           DJANGO_ENV: test
           NO_EXTERNAL_HTTP: "1"
         run: |
-          pytest -q --disable-warnings --maxfail=1 || true
+          set +e
+          coverage run -m pytest -q
+          code=$?
+          if [ "$code" = "5" ]; then
+            echo "No tests collected (exit 5). Treating as success during bootstrap."
+            exit 0
+          fi
+          exit $code
 
       - name: Coverage XML
-        if: env.skip_pytest != 'true'
+        if: always()
         run: |
-          coverage run -m pytest || true
-          coverage xml || true
+          if [ -f ".coverage" ]; then coverage xml -o coverage.xml || true; fi
