@@ -1,7 +1,7 @@
 import logging
 import os
 
-from serpapi import GoogleSearch  # noqa: F401
+from serpapi import GoogleSearch
 
 from .models import SerpApiSearch
 
@@ -19,30 +19,43 @@ def _execute_search(params: dict, engine_name: str) -> dict:
     search_params = params.copy()
     search_params["api_key"] = api_key
 
-    # Placeholder for actual API call
-    # search = GoogleSearch(search_params)
-    # results = search.get_dict()
+    try:
+        search = GoogleSearch(search_params)
+        results = search.get_dict()
 
-    # Simulate a response
-    results = {
-        "search_metadata": {"status": "Success"},
-        "search_parameters": search_params,
-    }
+        if "error" in results:
+            logger.error(
+                f"SerpAPI returned an error for {engine_name}: {results['error']}"
+            )
+            # Still log the attempt, but with the error response
+            SerpApiSearch.objects.create(
+                engine=engine_name,
+                search_parameters=params,
+                raw_response=results,
+            )
+            return results
 
-    SerpApiSearch.objects.create(
-        engine=engine_name,
-        search_parameters=params,  # Log original params without API key
-        raw_response=results,
-    )
+        SerpApiSearch.objects.create(
+            engine=engine_name,
+            search_parameters=params,
+            raw_response=results,
+        )
+        return results
 
-    return results
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during SerpAPI search: {e}")
+        # Log the failure
+        SerpApiSearch.objects.create(
+            engine=engine_name,
+            search_parameters=params,
+            raw_response={"error": f"Unexpected client error: {e}"},
+        )
+        raise
 
 
 def search_google_ai_overview(query: str):
-    params = {
-        "q": query,
-        "engine": "google_immersive_product",
-    }  # engine might need adjustment
+    # Note: As per SerpAPI docs, AI Overviews are part of the standard google engine
+    params = {"q": query, "engine": "google"}
     return _execute_search(params, "google_ai_overview")
 
 

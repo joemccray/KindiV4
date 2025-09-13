@@ -1,18 +1,19 @@
 import logging
 import time
 
+import requests
 from django.core.cache import cache
 
 from ip_rotator.services import get_rotated_session
 
-from .models import Indicator
+from .models import Indicator, ThreatReport
 
 logger = logging.getLogger(__name__)
 
-THREATMINER_BASE_URL = "https://api.threatminer.org"
+THREATMINER_BASE_URL = "https://api.threatminer.org/v2"
 RATE_LIMIT_KEY = "threatminer_api_request_timestamps"
-RATE_LIMIT_COUNT = 10
-RATE_LIMIT_PERIOD_SECONDS = 60
+RATE_LIMIT_COUNT = 10  # 10 queries
+RATE_LIMIT_PERIOD_SECONDS = 60  # per minute
 
 
 def _check_rate_limit():
@@ -23,7 +24,6 @@ def _check_rate_limit():
     timestamps = cache.get(RATE_LIMIT_KEY, [])
     now = time.time()
 
-    # Remove timestamps older than the rate limit period
     valid_timestamps = [t for t in timestamps if now - t < RATE_LIMIT_PERIOD_SECONDS]
 
     if len(valid_timestamps) < RATE_LIMIT_COUNT:
@@ -35,64 +35,97 @@ def _check_rate_limit():
     return False
 
 
+def _query_and_store(session, indicator, endpoint, rt_map):
+    """Helper function to query report types and store results."""
+    for rt_code, report_name in rt_map.items():
+        if not _check_rate_limit():
+            logger.warning(
+                f"Rate limited. Skipping report '{report_name}' for {indicator.value}"
+            )
+            continue
+
+        try:
+            url = f"{THREATMINER_BASE_URL}/{endpoint}?q={indicator.value}&rt={rt_code}"
+            response = session.get(url, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("status_code") == "200":
+                ThreatReport.objects.update_or_create(
+                    indicator=indicator,
+                    report_type=report_name,
+                    defaults={"raw_data": data["results"]},
+                )
+                logger.info(
+                    f"Successfully fetched report '{report_name}' for {indicator.value}"
+                )
+            else:
+                logger.warning(
+                    f"No results for report '{report_name}' for {indicator.value}: {data.get('status_message')}"
+                )
+
+        except requests.RequestException as e:
+            logger.error(
+                f"Error fetching report '{report_name}' for {indicator.value}: {e}"
+            )
+        time.sleep(1)  # Add a small delay between requests to be courteous
+
+
 def get_domain_intel(domain: str) -> Indicator:
     """
     Retrieves all available intelligence for a given domain from ThreatMiner.
     """
-    if not _check_rate_limit():
-        # Maybe return cached data or raise an exception
-        # For now, we'll just return the existing object if it exists
-        indicator, _ = Indicator.objects.get_or_create(
-            value=domain, type=Indicator.IndicatorType.DOMAIN
-        )
-        return indicator
-
-    get_rotated_session(THREATMINER_BASE_URL)
     indicator, created = Indicator.objects.get_or_create(
-        value=domain, type=Indicator.IndicatorType.DOMAIN
+        value=domain, defaults={"type": Indicator.IndicatorType.DOMAIN}
     )
     if not created:
         indicator.save()  # to update last_seen timestamp
 
-    # Placeholder for making actual API calls for different report types (rt=1, 2, 5 etc.)
-    # and creating ThreatReport objects.
-    # Example for one report type:
-    # report_type = "passive_dns"
-    # url = f"{THREATMINER_BASE_URL}/v2/domain.php?q={domain}&rt=2"
-    # response = session.get(url)
-    # if response.status_code == 200 and response.json()['status_code'] == 200:
-    #     ThreatReport.objects.update_or_create(
-    #         indicator=indicator,
-    #         report_type=report_type,
-    #         defaults={'raw_data': response.json()['results']}
-    #     )
+    session = get_rotated_session(THREATMINER_BASE_URL)
 
-    logger.info(
-        f"Threat intel service called for domain: {domain} (logic is placeholder)."
-    )
+    # Report types for domains
+    rt_map = {
+        1: "whois",
+        2: "passive_dns",
+        3: "uris",
+        4: "related_samples",
+        5: "subdomains",
+    }
+    _query_and_store(session, indicator, "domain.php", rt_map)
+
     return indicator
 
 
 def get_ip_intel(ip_address: str) -> Indicator:
     """
     Retrieves all available intelligence for a given IP address.
-    (Placeholder)
     """
-    indicator, _ = Indicator.objects.get_or_create(
-        value=ip_address, type=Indicator.IndicatorType.IPV4
+    indicator, created = Indicator.objects.get_or_create(
+        value=ip_address, defaults={"type": Indicator.IndicatorType.IPV4}
     )
-    logger.info(
-        f"Threat intel service called for IP: {ip_address} (logic is placeholder)."
-    )
+    if not created:
+        indicator.save()
+
+    session = get_rotated_session(THREATMINER_BASE_URL)
+
+    # Report types for hosts/IPs
+    rt_map = {
+        1: "whois",
+        2: "passive_dns",
+        3: "uris",
+        4: "related_samples",
+        5: "ssl_certificates",
+    }
+    _query_and_store(session, indicator, "host.php", rt_map)
+
     return indicator
 
 
 def get_hash_intel(file_hash: str) -> Indicator:
     """
     Retrieves all available intelligence for a given file hash.
-    (Placeholder)
     """
-    # Basic type inference, could be improved
+    # Basic type inference
     if len(file_hash) == 32:
         hash_type = Indicator.IndicatorType.MD5
     elif len(file_hash) == 40:
@@ -100,8 +133,23 @@ def get_hash_intel(file_hash: str) -> Indicator:
     else:
         hash_type = Indicator.IndicatorType.SHA256
 
-    indicator, _ = Indicator.objects.get_or_create(value=file_hash, type=hash_type)
-    logger.info(
-        f"Threat intel service called for hash: {file_hash} (logic is placeholder)."
+    indicator, created = Indicator.objects.get_or_create(
+        value=file_hash, defaults={"type": hash_type}
     )
+    if not created:
+        indicator.save()
+
+    session = get_rotated_session(THREATMINER_BASE_URL)
+
+    # Report types for samples/hashes
+    rt_map = {
+        1: "metadata",
+        2: "http_traffic",
+        3: "hosts",
+        4: "mutants",
+        5: "registry_keys",
+        6: "av_detections",
+    }
+    _query_and_store(session, indicator, "sample.php", rt_map)
+
     return indicator

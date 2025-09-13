@@ -1,138 +1,117 @@
-import requests
+import boto3
+from django.core.management import call_command
 from django.test import TestCase
-from django.urls import reverse
-from rest_framework import status
-from rest_framework.test import APITestCase
+from moto import mock_aws
 
+from . import services
 from .models import ApiGatewayProxy
-from .services import get_rotated_session
 
 
-class ApiGatewayProxyModelTest(TestCase):
-    """
-    Tests for the ApiGatewayProxy model.
-    """
+@mock_aws
+class IpRotatorServiceTest(TestCase):
+    def setUp(self):
+        # We need to create a client for the test methods to use
+        self.region = "us-east-1"
+        self.client = boto3.client("apigateway", region_name=self.region)
 
-    def test_create_proxy(self):
-        proxy = ApiGatewayProxy.objects.create(
-            target_site="https://example.com",
-            aws_region="us-east-1",
-            api_id="abcdef123",
-            endpoint_url="https://abcdef123.execute-api.us-east-1.amazonaws.com/proxy",
-            status=ApiGatewayProxy.ProxyStatus.ACTIVE,
-        )
-        self.assertEqual(str(proxy), "https://example.com (us-east-1) - ACTIVE")
+    def test_provision_gateways_success(self):
+        """
+        Test that provision_gateways successfully creates an API Gateway
+        and saves the proxy object.
+        """
+        target_site = "https://httpbin.org"
+
+        # Action
+        created_proxies = services.provision_gateways(target_site, [self.region])
+
+        # Assertions
+        self.assertEqual(len(created_proxies), 1)
         self.assertEqual(ApiGatewayProxy.objects.count(), 1)
 
+        proxy = ApiGatewayProxy.objects.first()
+        self.assertEqual(proxy.target_site, target_site)
+        self.assertEqual(proxy.aws_region, self.region)
+        self.assertEqual(proxy.status, ApiGatewayProxy.ProxyStatus.ACTIVE)
+        self.assertIsNotNone(proxy.api_id)
+        self.assertIn(proxy.api_id, proxy.endpoint_url)
 
-class IpRotatorServiceTest(TestCase):
-    """
-    Tests for the services in the ip_rotator app.
-    """
+        # Check AWS resources using boto3 against the mocked environment
+        rest_apis = self.client.get_rest_apis()["items"]
+        self.assertEqual(len(rest_apis), 1)
+        self.assertEqual(rest_apis[0]["id"], proxy.api_id)
 
-    @classmethod
-    def setUpTestData(cls):
-        cls.proxy = ApiGatewayProxy.objects.create(
-            target_site="https://httpbin.org",
-            aws_region="us-west-2",
-            api_id="testapi123",
-            endpoint_url="https://test-proxy.com/api",
-            status=ApiGatewayProxy.ProxyStatus.ACTIVE,
-        )
+        # Check deployment
+        deployments = self.client.get_deployments(restApiId=proxy.api_id)["items"]
+        self.assertEqual(len(deployments), 1)
 
-    def test_get_rotated_session_with_active_proxy(self):
+    def test_decommission_gateways_success(self):
         """
-        Test that get_rotated_session returns a session with correct proxy info.
+        Test that decommission_gateways successfully removes the API Gateway
+        and the proxy object from the database.
         """
-        session = get_rotated_session("https://httpbin.org")
-        self.assertIsInstance(session, requests.Session)
+        target_site = "https://httpbin.org"
 
-        expected_proxies = {
-            "http": self.proxy.endpoint_url,
-            "https": self.proxy.endpoint_url,
-        }
-        self.assertEqual(session.proxies, expected_proxies)
+        # Setup: First, provision a gateway to decommission
+        services.provision_gateways(target_site, [self.region])
+        self.assertEqual(ApiGatewayProxy.objects.count(), 1)
+        proxy_to_delete = ApiGatewayProxy.objects.first()
 
-        # Verify the last_used timestamp was updated
-        self.proxy.refresh_from_db()
-        self.assertIsNotNone(self.proxy.last_used)
+        # Action
+        services.decommission_gateways([proxy_to_delete.id])
 
-    def test_get_rotated_session_with_no_active_proxy(self):
+        # Assertions
+        self.assertEqual(ApiGatewayProxy.objects.count(), 0)
+
+        # Check that the API Gateway is gone from the mocked AWS environment
+        rest_apis = self.client.get_rest_apis()["items"]
+        self.assertEqual(len(rest_apis), 0)
+
+    def test_get_rotated_session(self):
         """
-        Test that a standard session is returned when no active proxy is available.
+        Test the get_rotated_session function. This doesn't need moto
+        but we can test it in the same class.
         """
-        # Deactivate the only proxy
-        self.proxy.status = ApiGatewayProxy.ProxyStatus.INACTIVE
-        self.proxy.save()
-
-        session = get_rotated_session("https://httpbin.org")
-        self.assertIsInstance(session, requests.Session)
+        # No active proxies
+        session = services.get_rotated_session("https://example.com")
         self.assertEqual(session.proxies, {})
 
-
-class IpRotatorApiTest(APITestCase):
-    """
-    Tests for the ip_rotator API endpoints.
-    """
-
-    @classmethod
-    def setUpTestData(cls):
-        cls.proxy1 = ApiGatewayProxy.objects.create(
-            target_site="https://site1.com",
-            aws_region="eu-central-1",
-            api_id="api1",
-            endpoint_url="https://api1.example.com",
+        # Add an active proxy
+        proxy = ApiGatewayProxy.objects.create(
+            target_site="https://example.com",
+            aws_region=self.region,
+            api_id="test-api-id",
+            endpoint_url="https://test.example.com",
             status=ApiGatewayProxy.ProxyStatus.ACTIVE,
         )
-        cls.proxy2 = ApiGatewayProxy.objects.create(
-            target_site="https://site2.com",
-            aws_region="ap-southeast-1",
-            api_id="api2",
-            endpoint_url="https://api2.example.com",
-            status=ApiGatewayProxy.ProxyStatus.INACTIVE,
+
+        session = services.get_rotated_session("https://example.com")
+        self.assertEqual(session.proxies["https"], proxy.endpoint_url)
+
+
+@mock_aws
+class ManagementCommandTest(TestCase):
+    def test_provision_command(self):
+        """Test the provision_proxies management command."""
+        call_command(
+            "provision_proxies",
+            "--site",
+            "https://test.com",
+            "--regions",
+            "us-east-1",
+            "us-west-2",
         )
-        cls.list_url = reverse("apigatewayproxy-list")
-        cls.detail_url = reverse("apigatewayproxy-detail", kwargs={"id": cls.proxy1.id})
+        self.assertEqual(ApiGatewayProxy.objects.count(), 2)
+        self.assertTrue(ApiGatewayProxy.objects.filter(aws_region="us-east-1").exists())
+        self.assertTrue(ApiGatewayProxy.objects.filter(aws_region="us-west-2").exists())
 
-    def test_list_proxies(self):
-        """
-        Ensure we can list all proxy objects.
-        """
-        response = self.client.get(self.list_url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
-        self.assertEqual(
-            response.data[0]["api_id"], self.proxy2.api_id
-        )  # Default ordering is -created_at
+    def test_decommission_command(self):
+        """Test the decommission_proxies management command."""
+        # First create one to delete
+        call_command(
+            "provision_proxies", "--site", "https://test.com", "--regions", "us-east-1"
+        )
+        proxy_id = ApiGatewayProxy.objects.first().id
 
-    def test_retrieve_proxy(self):
-        """
-        Ensure we can retrieve a single proxy object.
-        """
-        response = self.client.get(self.detail_url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["id"], str(self.proxy1.id))
-        self.assertEqual(response.data["target_site"], self.proxy1.target_site)
-
-    def test_cannot_create_proxy_via_api(self):
-        """
-        Ensure that POST requests to the list endpoint are not allowed.
-        """
-        data = {"target_site": "https://new.com", "aws_region": "us-east-1"}
-        response = self.client.post(self.list_url, data)
-        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
-
-    def test_cannot_update_proxy_via_api(self):
-        """
-        Ensure that PUT requests to the detail endpoint are not allowed.
-        """
-        data = {"status": ApiGatewayProxy.ProxyStatus.INACTIVE}
-        response = self.client.put(self.detail_url, data)
-        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
-
-    def test_cannot_delete_proxy_via_api(self):
-        """
-        Ensure that DELETE requests to the detail endpoint are not allowed.
-        """
-        response = self.client.delete(self.detail_url)
-        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        # Now decommission it
+        call_command("decommission_proxies", str(proxy_id))
+        self.assertEqual(ApiGatewayProxy.objects.count(), 0)

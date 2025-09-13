@@ -1,5 +1,10 @@
 import logging
 import os
+import time
+
+import requests
+from django.conf import settings
+from django.core.cache import cache
 
 from ip_rotator.services import get_rotated_session
 
@@ -8,54 +13,99 @@ from .models import URLCheck
 logger = logging.getLogger(__name__)
 
 PHISHTANK_CHECK_URL = "http://checkurl.phishtank.com/checkurl/"
-PHISHTANK_API_KEY = os.environ.get("PHISHTANK_API_KEY")
 
 # Cache keys for rate limiting
-RATE_LIMIT_LIMIT_KEY = "phishtank_limit"
 RATE_LIMIT_REMAINING_KEY = "phishtank_remaining"
 RATE_LIMIT_RESET_KEY = "phishtank_reset"
+
+
+def _check_rate_limit():
+    """
+    Checks PhishTank rate limit based on cached headers from previous responses.
+    Returns True if a request can be made, False otherwise.
+    """
+    remaining = cache.get(RATE_LIMIT_REMAINING_KEY)
+    reset_time = cache.get(RATE_LIMIT_RESET_KEY)
+
+    # If we have no data, assume we can make a request.
+    if remaining is None or reset_time is None:
+        return True
+
+    if int(remaining) > 0:
+        return True
+
+    # If limit is 0, check if the reset time has passed.
+    if time.time() >= int(reset_time):
+        return True
+
+    logger.warning("PhishTank API rate limit exceeded. Skipping check.")
+    return False
+
+
+def _update_rate_limit_cache(headers):
+    """Updates the cache with the latest rate limit headers from the API response."""
+    if "X-Request-Limit-Remaining" in headers:
+        cache.set(
+            RATE_LIMIT_REMAINING_KEY,
+            int(headers["X-Request-Limit-Remaining"]),
+            timeout=int(headers.get("X-Request-Limit-Interval", 300)),
+        )
+    if "X-Request-Limit-Reset" in headers:
+        cache.set(
+            RATE_LIMIT_RESET_KEY,
+            int(headers["X-Request-Limit-Reset"]),
+            timeout=int(headers.get("X-Request-Limit-Interval", 300)),
+        )
 
 
 def check_url_for_phishing(url_to_check: str) -> URLCheck:
     """
     Checks a URL against the PhishTank database.
     """
-    # Placeholder for a more robust rate limit check
-    # if cache.get(RATE_LIMIT_REMAINING_KEY, 1) <= 0:
-    #     logger.warning("PhishTank rate limit likely exceeded. Skipping check.")
-    #     # Return a cached result or raise an exception
-    #     return URLCheck.objects.filter(url_to_check=url_to_check).first()
+    if existing_check := URLCheck.objects.filter(url_to_check=url_to_check).first():
+        logger.info(f"Returning cached result for {url_to_check}")
+        return existing_check
 
-    get_rotated_session("http://checkurl.phishtank.com")
+    if not _check_rate_limit():
+        raise Exception("PhishTank API rate limit exceeded.")
 
-    # user_agent = getattr(settings, "KINDI_USER_AGENT", "kindi-platform/1.0")
-    # headers = {"User-Agent": user_agent}
+    api_key = os.environ.get("PHISHTANK_API_KEY")
+    if not api_key:
+        raise ValueError("PHISHTANK_API_KEY is not set in environment.")
 
-    # post_data = {
-    #     "url": url_to_check,
-    #     "format": "json",
-    #     "app_key": PHISHTANK_API_KEY,
-    # }
+    session = get_rotated_session("http://checkurl.phishtank.com")
+    user_agent = getattr(settings, "KINDI_USER_AGENT", "kindi-platform/1.0")
+    headers = {"User-Agent": user_agent}
+    post_data = {
+        "url": url_to_check,
+        "format": "json",
+        "app_key": api_key,
+    }
 
-    # Placeholder for actual API call
-    # response = session.post(PHISHTANK_CHECK_URL, data=post_data, headers=headers)
-    # response.raise_for_status()
-    # data = response.json()
+    try:
+        response = session.post(
+            PHISHTANK_CHECK_URL, data=post_data, headers=headers, timeout=20
+        )
+        _update_rate_limit_cache(response.headers)
+        response.raise_for_status()
+        data = response.json()
 
-    # Simulate a response for a non-phishing URL for now
-    data = {"meta": {"status": "ok"}, "results": {"in_database": False}}
+        results = data.get("results", {})
+        # The 'valid' key from PhishTank means it's a valid, active phish. It can be a string 'y'.
+        is_phishing = results.get("in_database") is True and results.get("valid") == "y"
+        phish_id_str = results.get("phish_id")
 
-    # Create a record of the check
-    check_record, created = URLCheck.objects.update_or_create(
-        url_to_check=url_to_check,
-        defaults={
-            "is_phishing": data["results"].get("valid", False)
-            and data["results"].get("in_database", False),
-            "in_phishtank_database": data["results"].get("in_database", False),
-            "phishtank_id": data["results"].get("phish_id"),
-            "details_url": data["results"].get("phish_detail_page"),
-            "raw_response": data,
-        },
-    )
-
-    return check_record
+        return URLCheck.objects.create(
+            url_to_check=url_to_check,
+            is_phishing=is_phishing,
+            in_phishtank_database=results.get("in_database", False),
+            phishtank_id=int(phish_id_str) if phish_id_str else None,
+            details_url=results.get("phish_detail_url"),
+            raw_response=data,
+        )
+    except requests.RequestException as e:
+        logger.error(f"PhishTank API request failed for url {url_to_check}: {e}")
+        raise  # Re-raise the exception to be handled by the caller
+    except Exception as e:
+        logger.error(f"An unexpected error occurred checking {url_to_check}: {e}")
+        raise
