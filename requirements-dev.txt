@@ -6,3 +6,5 @@ bandit==1.7.9
 pytest==8.3.2
 pytest-django==4.8.0
 coverage==7.6.1
+moto[apigatewayv2,iam]==5.0.10
+boto3-stubs[apigatewayv2,iam]
