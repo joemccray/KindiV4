@@ -1,0 +1,8 @@
+# Lint / Format / Security
+ruff==0.6.8
+flake8==7.1.1
+bandit==1.7.9
+# Testing
+pytest==8.3.2
+pytest-django==4.8.0
+coverage==7.6.1

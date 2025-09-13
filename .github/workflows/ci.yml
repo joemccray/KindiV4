@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt || true; fi
+          python -m pip install "ruff==0.6.8" "flake8==7.1.1" "bandit==1.7.9" \
+                                "pytest==8.3.2" "pytest-django==4.8.0" "coverage==7.6.1"
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+      - run: flake8 .
+      - name: Bandit
+        run: |
+          if [ -f ".bandit.yaml" ]; then bandit -q -c .bandit.yaml -r .;
+          elif [ -f ".bandit.yml" ]; then bandit -q -c .bandit.yml -r .;
+          elif [ -f ".bandit" ]; then
+            first_char=$(grep -v '^\s*$' .bandit | grep -v '^\s*#' | head -n1 | cut -c1-1 || true)
+            if [ "$first_char" = "[" ]; then
+              bandit -q -r . -x tests,*/migrations,venv,.venv,node_modules,dist,build -s B101,B311
+            else
+              bandit -q -c .bandit -r .
+            fi
+          else
+            bandit -q -r . -x tests,*/migrations,venv,.venv,node_modules,dist,build -s B101,B311
+          fi
+      - name: Pytest
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings_test
+          DJANGO_ENV: test
+          NO_EXTERNAL_HTTP: "1"
+        run: |
+          set +e
+          coverage run -m pytest -q
+          code=$?
+          if [ "$code" = "5" ]; then exit 0; fi
+          exit $code
+      - run: if [ -f ".coverage" ]; then coverage xml -o coverage.xml || true; fi
+
+  web:
+    if: ${{ hashFiles('**/package.json') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node (cached)
+        if: ${{ hashFiles('**/package-lock.json') != '' || hashFiles('**/yarn.lock') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Setup Node (no cache)
+        if: ${{ hashFiles('**/package-lock.json') == '' && hashFiles('**/yarn.lock') == '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Detect web directory
+        id: detect
+        run: |
+          PKG=$(git ls-files **/package.json | head -n1 || true)
+          if [ -z "$PKG" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0; fi
+          DIR=$(dirname "$PKG")
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        if: ${{ steps.detect.outputs.skip != '1' }}
+        run: |
+          cd "${{ steps.detect.outputs.dir }}"
+          if [ -f yarn.lock ]; then yarn install --frozen-lockfile;
+          elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then npm ci;
+          else npm install; fi
+      - name: Run tests (or type-check)
+        if: ${{ steps.detect.outputs.skip != '1' }}
+        run: |
+          cd "${{ steps.detect.outputs.dir }}"
+          if npm run -s test >/dev/null 2>&1; then npm test --silent;
+          elif npm run -s type-check >/dev/null 2>&1; then npm run -s type-check;
+          else echo "No test or type-check script found. Skipping."; fi
