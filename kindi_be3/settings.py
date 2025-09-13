@@ -47,6 +47,11 @@ INSTALLED_APPS = [
     # Local apps
     "ip_rotator",
     "people_search",
+    "threat_intel",
+    "phishing_intel",
+    "malware_intel",
+    "vulnerability_intel",
+    "serpapi_integration",
 ]
 
 MIDDLEWARE = [
