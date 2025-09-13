@@ -1,0 +1,16 @@
+name: Sourcery
+
+# This trigger runs on push (to all branches) and on pull requests
+on: [push, pull_request]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Run Sourcery
+        uses: sourcery-ai/action@v1
+        with:
+          token: ${{ secrets.SOURCERY_TOKEN }}
