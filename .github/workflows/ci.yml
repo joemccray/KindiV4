@@ -7,18 +7,18 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # --- NEW: Sourcery auto-fix job ---
+  # --- Sourcery auto-fix job ---
   sourcery_autofix:
     name: Sourcery (auto-fix and push)
     runs-on: ubuntu-latest
 
-    # allow the workflow to push back to PR branches
+    # Run this job only for PR events (avoids undefined pull_request on push)
+    if: ${{ github.event_name == 'pull_request' }}
+
+    # Allow the workflow to push to branches in this repository
     permissions:
       contents: write
       pull-requests: write
-
-    # only run on PRs from the same repo (no forks)
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
 
     steps:
       - name: Checkout PR branch
@@ -43,7 +43,9 @@ jobs:
       - name: Format after fixes (Ruff)
         run: ruff format .
 
-      - name: Commit & push if there are changes
+      # Only commit/push when the PR branch lives in the same repository (not a fork)
+      - name: Commit & push if there are changes (same-repo PRs only)
+        if: ${{ github.repository == github.event.pull_request.head.repo.full_name }}
         run: |
           set -e
           if ! git diff --quiet; then
@@ -56,13 +58,14 @@ jobs:
             echo "No Sourcery changes to commit."
           fi
 
+      # Always run a final review; this fails the job if non-auto-fixable issues remain
       - name: Final check – fail if issues remain
         run: sourcery review .
 
-  # --- Backend (unchanged) ---
+  # --- Backend job ---
   backend:
     runs-on: ubuntu-latest
-    needs: [sourcery_autofix]  # ensure we lint/test after any auto-fixes
+    needs: [sourcery_autofix]   # lint/test after Sourcery auto-fixes
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -142,7 +145,7 @@ jobs:
         run: |
           if [ -f ".coverage" ]; then coverage xml -o coverage.xml || true; fi
 
-  # --- Optional web job (unchanged, safe) ---
+  # --- Optional web job (lockfile-aware, subfolder-friendly) ---
   web:
     if: ${{ hashFiles('**/package.json') != '' }}
     runs-on: ubuntu-latest
