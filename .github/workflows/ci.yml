@@ -7,7 +7,7 @@ on:
     branches: ["main"]
 
 jobs:
-  # --- Sourcery auto-fix job (runs only on PRs) ---
+  # ---------- Sourcery auto-fix (PRs only) ----------
   sourcery_autofix:
     name: Sourcery (auto-fix and push)
     runs-on: ubuntu-latest
@@ -39,8 +39,8 @@ jobs:
       - name: Format after fixes (Ruff)
         run: ruff format .
 
-      # Only push on same-repo PRs (not forks)
-      - name: Commit & push if there are changes (same-repo PRs only)
+      # Only push changes for same-repo PRs (not forks)
+      - name: Commit & push if changes (same-repo PRs only)
         if: ${{ github.repository == github.event.pull_request.head.repo.full_name }}
         run: |
           set -e
@@ -54,14 +54,15 @@ jobs:
             echo "No Sourcery changes to commit."
           fi
 
-      # Fail if remaining issues require manual fixes
+      # Fails the job if non-auto-fixable issues remain
       - name: Final check – fail if issues remain
         run: sourcery review .
 
-  # --- Backend job ---
+  # ---------- Python backend (lint • sec • test) ----------
   backend:
     name: Python backend (lint • sec • test)
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,7 +102,7 @@ jobs:
       - name: Ruff (format check)
         run: ruff format --check .
 
-      # >>> Changed: relax long-line rule so CI doesn't fail on E501
+      # Relax long-line enforcement so E501 won't fail CI
       - name: Flake8 (max line length = 120)
         run: flake8 --max-line-length=120 .
 
@@ -122,9 +123,24 @@ jobs:
             bandit -q -r . -x tests,*/migrations,venv,.venv,node_modules,dist,build -s B101,B311
           fi
 
+      # Dynamically discover a usable Django settings module before pytest
+      - name: Pick Django settings module
+        id: pick_ds
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          candidates = ("config.settings_test","config.settings","settings_test","settings")
+          for m in candidates:
+            if importlib.util.find_spec(m) is not None:
+              print(f"::set-output name=ds::{m}")
+              sys.exit(0)
+          print("::error::No Django settings module found (looked for config.settings_test, config.settings, settings_test, settings)")
+          sys.exit(1)
+          PY
+
       - name: Pytest
         env:
-          DJANGO_SETTINGS_MODULE: config.settings_test
+          DJANGO_SETTINGS_MODULE: ${{ steps.pick_ds.outputs.ds }}
           DJANGO_ENV: test
           NO_EXTERNAL_HTTP: "1"
         run: |
