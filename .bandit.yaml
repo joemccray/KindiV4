@@ -1,0 +1,12 @@
+---
+exclude_dirs:
+  - tests
+  - "*/migrations"
+  - venv
+  - .venv
+  - node_modules
+  - dist
+  - build
+skips:
+  - B101
+  - B311

@@ -1,0 +1,11 @@
+line-length = 88
+target-version = "py311"
+extend-exclude = [".venv", "venv", "node_modules", "dist", "build", "migrations"]
+
+[lint]
+extend-select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[lint.isort]
+known-first-party = ["project", "apps"]
+combine-as-imports = true
