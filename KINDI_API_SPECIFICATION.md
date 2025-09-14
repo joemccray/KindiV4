@@ -1199,6 +1199,7 @@ Lists all user roles defined in the system (admin only).
   "data": [
     {
       "id": "string",
+      "name": "string",
       "permissions": ["string"],
       "description": "string"
     }
