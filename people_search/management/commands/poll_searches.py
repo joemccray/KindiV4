@@ -4,15 +4,13 @@ from people_search import services
 
 
 class Command(BaseCommand):
-    help = "Polls for the results of any pending People Search queries."
+    help = "Triggers Celery tasks to poll for pending People Search queries."
 
     def handle(self, *args, **options):
-        self.stdout.write("Starting to poll for pending search results...")
+        self.stdout.write("Triggering Celery tasks for all pending searches...")
 
         try:
-            result_message = services.poll_and_process_results()
-            self.stdout.write(self.style.SUCCESS(f"Polling finished. {result_message}"))
+            result_message = services.trigger_poll_for_all_searches()
+            self.stdout.write(self.style.SUCCESS(result_message))
         except Exception as e:
-            self.stderr.write(
-                self.style.ERROR(f"An unexpected error occurred during polling: {e}")
-            )
+            self.stderr.write(self.style.ERROR(f"An unexpected error occurred: {e}"))
