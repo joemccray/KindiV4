@@ -195,7 +195,7 @@ class AdvancedSearchAPIView(APIView):
             lookup = "contains"
 
         if request.query_params.get("caseSensitive") != "true":
-            lookup = "i" + lookup
+            lookup = f"i{lookup}"
         search_field = lookup
 
         # Entity filters
@@ -450,8 +450,7 @@ class RelationshipPathAPIView(APIView):
 
         # Find all other entities connected to those events/locations
         neighbor_q = Q(events__in=events) | Q(locations__in=locations)
-        neighbors = Entity.objects.filter(neighbor_q).distinct().exclude(pk=entity.pk)
-        return neighbors
+        return Entity.objects.filter(neighbor_q).distinct().exclude(pk=entity.pk)
 
     def get(self, request, *args, **kwargs):
         source_id = request.query_params.get("sourceId")
