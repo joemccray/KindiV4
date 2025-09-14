@@ -30,8 +30,7 @@ class Command(BaseCommand):
         )
 
         try:
-            created_proxies = services.provision_gateways(site, regions)
-            if created_proxies:
+            if created_proxies := services.provision_gateways(site, regions):
                 self.stdout.write(
                     self.style.SUCCESS(
                         f"Successfully provisioned or verified {len(created_proxies)} proxies."

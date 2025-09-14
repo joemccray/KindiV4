@@ -201,7 +201,7 @@ class AdvancedSearchAPIView(APIView):
             lookup = "contains"
 
         if request.query_params.get("caseSensitive") != "true":
-            lookup = "i" + lookup
+            lookup = f"i{lookup}"
         search_field = lookup
 
         # Entity filters

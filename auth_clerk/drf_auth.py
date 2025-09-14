@@ -31,10 +31,10 @@ class ClerkAuthentication(BaseAuthentication):
         kid = header.get("kid")
         key = None
         if kid:
-            jwk = self.jwks_client.get_key(kid)
-            if not jwk:
+            if jwk := self.jwks_client.get_key(kid):
+                key = jwt.PyJWK(jwk).key  # builds cryptography key
+            else:
                 raise exceptions.AuthenticationFailed("Unknown key id (rotation?)")
-            key = jwt.PyJWK(jwk).key  # builds cryptography key
         # Verify signature and basic time claims with small skew
         try:
             payload = jwt.decode(
@@ -43,9 +43,7 @@ class ClerkAuthentication(BaseAuthentication):
                 algorithms=["RS256", "EdDSA"],  # Clerk supports RSA & EdDSA
                 options={"require": ["exp", "iat"]},
                 leeway=settings.CLERK_MAX_CLOCK_SKEW_SEC,
-                audience=None
-                if not settings.CLERK_ALLOWED_AUDIENCES
-                else settings.CLERK_ALLOWED_AUDIENCES,
+                audience=settings.CLERK_ALLOWED_AUDIENCES or None,
                 issuer=settings.CLERK_ISSUER,
             )
         except jwt.ExpiredSignatureError as e:
@@ -83,7 +81,6 @@ class ClerkAuthentication(BaseAuthentication):
             return auth.split(" ", 1)[1].strip()
         # Optional cookie-based (same-origin)
         if settings.CLERK_ACCEPT_COOKIE:
-            cookie = request.COOKIES.get("__session")
-            if cookie:
+            if cookie := request.COOKIES.get("__session"):
                 return cookie
         return None
