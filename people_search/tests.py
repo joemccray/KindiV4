@@ -2,6 +2,7 @@ import os
 import uuid
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
@@ -84,6 +85,10 @@ class PeopleSearchServiceTest(TestCase):
 
 
 class PeopleSearchApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("people_search.views.services.initiate_reachstream_search")
     def test_create_search_api(self, mock_initiate_search):
         test_uuid = uuid.uuid4()

@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -89,6 +90,10 @@ class ThreatIntelServiceTest(TestCase):
 
 
 class ThreatIntelApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("threat_intel.views.services.get_domain_intel")
     def test_domain_lookup_api(self, mock_get_domain_intel):
         cve_id = "test.com"

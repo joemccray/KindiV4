@@ -54,7 +54,30 @@ INSTALLED_APPS = [
     "serpapi_integration.apps.SerpapiIntegrationConfig",
     "core.apps.CoreConfig",
     "users.apps.UsersConfig",
+    "auth_clerk.apps.AuthClerkConfig",
 ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "auth_clerk.drf_auth.ClerkAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+}
+
+# Clerk Settings
+CLERK_ISSUER = os.environ.get("CLERK_ISSUER")
+CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL")
+CLERK_AUTHORIZED_PARTIES = [
+    p for p in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",") if p
+]
+CLERK_ALLOWED_AUDIENCES = [
+    a for a in os.environ.get("CLERK_ALLOWED_AUDIENCES", "").split(",") if a
+]
+CLERK_MAX_CLOCK_SKEW_SEC = int(os.environ.get("CLERK_MAX_CLOCK_SKEW_SEC", "60"))
+CLERK_ACCEPT_COOKIE = os.environ.get("CLERK_ACCEPT_COOKIE", "1") == "1"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

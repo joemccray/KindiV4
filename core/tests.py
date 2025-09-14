@@ -1,5 +1,6 @@
 import datetime
 
+from django.contrib.auth.models import User
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -14,6 +15,8 @@ class SearchAPITests(APITestCase):
     """
 
     def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         self.entity1 = Entity.objects.create(name="Project Chimera", type="asset")
         self.entity2 = Entity.objects.create(
             name="John Smith", type="person", attributes={"notes": "Related to Chimera"}
@@ -157,6 +160,8 @@ class RelationshipAnalysisAPITests(APITestCase):
     """
 
     def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         # Create a network of entities
         self.e1 = Entity.objects.create(name="E1", type="person")
         self.e2 = Entity.objects.create(name="E2", type="person")
@@ -268,6 +273,26 @@ class RelationshipAnalysisAPITests(APITestCase):
         self.assertEqual(len(response.data["nodes"]), 3)
         self.assertEqual(len(response.data["links"]), 2)
 
+    def test_strength_service_function(self):
+        """
+        Directly test the calculate_relationship_strength service function.
+        """
+        from . import services
+
+        result = services.calculate_relationship_strength(self.e1, self.e2)
+        self.assertEqual(result["strength"], 2)
+        self.assertEqual(len(result["connections"]["sharedEvents"]), 1)
+
+    def test_path_service_function(self):
+        """
+        Directly test the find_shortest_path service function.
+        """
+        from . import services
+
+        result = services.find_shortest_path(self.e2, self.e3)
+        self.assertEqual(result["pathLength"], 2)
+        self.assertEqual(len(result["path"]), 3)
+
 
 class ImportExportAPITests(APITestCase):
     """
@@ -275,6 +300,8 @@ class ImportExportAPITests(APITestCase):
     """
 
     def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         self.workspace = Workspace.objects.create(name="Export Case")
         self.entity = Entity.objects.create(name="E1", type="person")
         self.event = Event.objects.create(title="Ev1", timestamp=timezone.now())
@@ -320,6 +347,7 @@ class ImportExportAPITests(APITestCase):
         from rest_framework.test import APIClient
 
         client = APIClient()
+        client.force_authenticate(user=self.user)
         response = client.post(import_url, {"file": upload_file}, format="multipart")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -339,6 +367,8 @@ class WorkspaceAPITests(APITestCase):
     """
 
     def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         self.entity = Entity.objects.create(name="E1", type="person")
         self.location = Location.objects.create(name="L1", latitude=1, longitude=1)
         self.event = Event.objects.create(title="Ev1", timestamp=timezone.now())
@@ -430,6 +460,8 @@ class EventAPITests(APITestCase):
         """
         Set up initial data for tests.
         """
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         self.entity = Entity.objects.create(name="Test Entity", type="person")
         self.location = Location.objects.create(
             name="Test Location", latitude=1.0, longitude=1.0
@@ -521,6 +553,8 @@ class LocationAPITests(APITestCase):
         """
         Set up initial data for tests.
         """
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         self.location1 = Location.objects.create(
             name="Safe House Alpha",
             latitude=40.7128,
@@ -609,6 +643,8 @@ class EntityAPITests(APITestCase):
         """
         Set up initial data for tests.
         """
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
         self.entity1 = Entity.objects.create(
             name="John Doe",
             type=Entity.EntityType.PERSON,

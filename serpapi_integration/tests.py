@@ -1,6 +1,7 @@
 import os
 from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
@@ -61,6 +62,10 @@ class SerpApiServiceTest(TestCase):
 
 
 class SerpApiEndpointTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("serpapi_integration.views.services.search_google_news")
     def test_news_search_api(self, mock_search_service):
         mock_search_service.return_value = {"results": "some news"}

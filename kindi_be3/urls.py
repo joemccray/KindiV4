@@ -28,6 +28,7 @@ urlpatterns = [
     path("api/v1/", include("vulnerability_intel.urls")),
     path("api/v1/serpapi/", include("serpapi_integration.urls")),
     path("api/v1/users/", include("users.urls")),
+    path("api/v1/auth/", include("auth_clerk.urls")),
     # Core API endpoints
     path("api/v1/", include("core.urls")),
 ]

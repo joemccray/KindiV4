@@ -1,6 +1,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -85,6 +86,10 @@ class PhishingIntelServiceTest(TestCase):
 
 
 class PhishingIntelApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("phishing_intel.views.services.check_url_for_phishing")
     def test_check_url_api(self, mock_check_url):
         test_url = "https://a-test-url.com/login"
