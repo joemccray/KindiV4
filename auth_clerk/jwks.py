@@ -13,7 +13,8 @@ class JWKSClient:
         self.jwks_url = jwks_url
 
     def fetch_jwks(self) -> dict[str, Any]:
-        if cached := _JWKS_CACHE.get(self.jwks_url):
+        cached = _JWKS_CACHE.get(self.jwks_url)
+        if cached:
             return cached
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(self.jwks_url)
@@ -30,6 +31,7 @@ class JWKSClient:
         # Kid not found: clear cache and retry once (handles rotation)
         _JWKS_CACHE.pop(self.jwks_url, None)
         jwks = self.fetch_jwks()
-        return next(
-            (key for key in jwks.get("keys", []) if key.get("kid") == kid), None
-        )
+        for key in jwks.get("keys", []):
+            if key.get("kid") == kid:
+                return key
+        return None

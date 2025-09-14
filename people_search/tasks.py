@@ -18,18 +18,21 @@ def _process_and_store_results(search_query: SearchQuery, results_data: list):
     """
     Processes the raw results from ReachStream and stores them as PersonProfile objects.
     """
-    if profiles_to_create := [
-        PersonProfile(
-            search_query=search_query,
-            full_name=item.get("contact_name"),
-            job_title=item.get("contact_job_title_1"),
-            company_name=item.get("company_company_name"),
-            email=item.get("contact_email_1"),
-            linkedin_url=item.get("contact_social_linkedin"),
-            raw_data=item,
+    profiles_to_create = []
+    for item in results_data:
+        profiles_to_create.append(
+            PersonProfile(
+                search_query=search_query,
+                full_name=item.get("contact_name"),
+                job_title=item.get("contact_job_title_1"),
+                company_name=item.get("company_company_name"),
+                email=item.get("contact_email_1"),
+                linkedin_url=item.get("contact_social_linkedin"),
+                raw_data=item,
+            )
         )
-        for item in results_data
-    ]:
+
+    if profiles_to_create:
         PersonProfile.objects.bulk_create(profiles_to_create)
         logger.info(
             f"Stored {len(profiles_to_create)} profiles for search query {search_query.id}"
@@ -79,16 +82,17 @@ def poll_and_process_search(search_query_id: str):
         response.raise_for_status()
         data = response.json()
 
-        if data.get("status") != 200 or "data" not in data:
+        if data.get("status") == 200 and "data" in data:
+            _process_and_store_results(query, data["data"])
+            query.status = SearchQuery.SearchStatus.COMPLETED
+            query.completed_at = timezone.now()
+            query.save()
+            logger.info(f"Search query {query.id} completed successfully.")
+        else:
             raise Exception(
                 f"API returned an error: {data.get('message', 'Unknown error')}"
             )
 
-        _process_and_store_results(query, data["data"])
-        query.status = SearchQuery.SearchStatus.COMPLETED
-        query.completed_at = timezone.now()
-        query.save()
-        logger.info(f"Search query {query.id} completed successfully.")
     except requests.RequestException as e:
         logger.error(f"HTTP request failed while polling for {query.id}: {e}")
         query.status = SearchQuery.SearchStatus.FAILED
