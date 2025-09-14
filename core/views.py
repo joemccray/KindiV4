@@ -6,9 +6,11 @@ from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import MultiPartParser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import services
 from .models import Activity, Entity, Event, Location, Workspace
 from .serializers import (
     EntitySerializer,
@@ -25,7 +27,7 @@ class WorkspaceViewSet(viewsets.ModelViewSet):
 
     queryset = Workspace.objects.all().order_by("-updated_at")
     serializer_class = WorkspaceSerializer
-    # permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
         """
@@ -57,7 +59,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
     queryset = Event.objects.all().order_by("-timestamp")
     serializer_class = EventSerializer
-    # permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -78,7 +80,7 @@ class LocationViewSet(viewsets.ModelViewSet):
 
     queryset = Location.objects.all().order_by("-created_at")
     serializer_class = LocationSerializer
-    # permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -101,7 +103,7 @@ class EntityViewSet(viewsets.ModelViewSet):
 
     queryset = Entity.objects.all().order_by("-created_at")
     serializer_class = EntitySerializer
-    # permission_classes = [permissions.IsAuthenticated] # Will be enabled later
+    permission_classes = [IsAuthenticated]
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -122,6 +124,8 @@ class GlobalSearchAPIView(APIView, PageNumberPagination):
     """
     Performs a global search across entities, events, and locations.
     """
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         query = request.query_params.get("query", None)
@@ -174,6 +178,8 @@ class AdvancedSearchAPIView(APIView):
     """
     Performs an advanced search with multiple filters.
     """
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         query = request.query_params.get("query", None)
@@ -266,6 +272,8 @@ class SearchSuggestionsAPIView(APIView):
     Returns search suggestions based on partial input.
     """
 
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, *args, **kwargs):
         query = request.query_params.get("query", None)
         if not query:
@@ -310,6 +318,8 @@ class RelationshipStrengthAPIView(APIView):
     Calculates and returns the relationship strength between two entities.
     """
 
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, *args, **kwargs):
         entity1_id = request.query_params.get("entity1")
         entity2_id = request.query_params.get("entity2")
@@ -331,126 +341,39 @@ class RelationshipStrengthAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Find shared events and locations
-        shared_events = Event.objects.filter(entities=entity1).filter(entities=entity2)
-        shared_locations = Location.objects.filter(associated_entities=entity1).filter(
-            associated_entities=entity2
-        )
-
-        # Calculate strength (simple count for now)
-        strength = shared_events.count() + shared_locations.count()
-
-        return Response(
-            {
-                "strength": strength,
-                "connections": {
-                    "sharedEvents": [
-                        {"id": str(e.id), "title": e.title} for e in shared_events
-                    ],
-                    "sharedLocations": [
-                        {"id": str(loc.id), "name": loc.name}
-                        for loc in shared_locations
-                    ],
-                },
-            }
-        )
+        data = services.calculate_relationship_strength(entity1, entity2)
+        return Response(data)
 
 
 class RelationshipNetworkAPIView(APIView):
     """
-    Returns network graph data for visualization.
+    Returns network graph data by calling the service layer.
     """
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         entity_ids_str = request.query_params.get("entityIds")
         depth = int(request.query_params.get("depth", 1))
         min_strength = int(request.query_params.get("minStrength", 0))
 
-        # Start with a root set of entities
         if entity_ids_str:
             root_entities = Entity.objects.filter(pk__in=entity_ids_str.split(","))
         else:
-            # If no IDs are provided, this could be a very large query.
-            # In a real app, we would require root IDs or apply other limits.
-            # For now, we'll proceed but this is a potential performance issue.
             root_entities = Entity.objects.all()
 
-        if not root_entities.exists():
-            return Response({"nodes": [], "links": []})
-
-        # Use BFS to explore the graph
-        nodes = set()
-        links = set()
-        queue = [(entity, 0) for entity in root_entities]  # (entity, current_depth)
-        visited = {entity.pk for entity in root_entities}
-
-        while queue:
-            current_entity, current_depth = queue.pop(0)
-            nodes.add(current_entity)
-
-            if current_depth >= depth:
-                continue
-
-            # Find neighbors
-            events = current_entity.events.all()
-            locations = current_entity.locations.all()
-            neighbor_q = Q(events__in=events) | Q(locations__in=locations)
-            neighbors = (
-                Entity.objects.filter(neighbor_q)
-                .distinct()
-                .exclude(pk=current_entity.pk)
-            )
-
-            for neighbor in neighbors:
-                # Calculate strength
-                shared_events_count = (
-                    Event.objects.filter(entities=current_entity)
-                    .filter(entities=neighbor)
-                    .count()
-                )
-                shared_locs_count = (
-                    Location.objects.filter(associated_entities=current_entity)
-                    .filter(associated_entities=neighbor)
-                    .count()
-                )
-                strength = shared_events_count + shared_locs_count
-
-                if strength >= min_strength:
-                    # Add link (use a tuple of sorted IDs to ensure uniqueness)
-                    link_tuple = tuple(
-                        sorted((str(current_entity.pk), str(neighbor.pk)))
-                    )
-                    links.add((link_tuple[0], link_tuple[1], strength))
-
-                if neighbor.pk not in visited:
-                    visited.add(neighbor.pk)
-                    queue.append((neighbor, current_depth + 1))
-
-        # Format for response
-        formatted_nodes = [
-            {"id": str(n.id), "name": n.name, "type": n.type, "group": 1} for n in nodes
-        ]
-        formatted_links = [
-            {"source": link[0], "target": link[1], "value": link[2]} for link in links
-        ]
-
-        return Response({"nodes": formatted_nodes, "links": formatted_links})
+        graph_data = services.build_relationship_network(
+            list(root_entities), depth, min_strength
+        )
+        return Response(graph_data)
 
 
 class RelationshipPathAPIView(APIView):
     """
-    Finds the shortest path between two entities using Breadth-First Search.
+    Finds the shortest path between two entities by calling the service layer.
     """
 
-    def _get_neighbors(self, entity):
-        """Helper to find all entities connected to the given entity."""
-        # Find events and locations connected to the entity
-        events = entity.events.all()
-        locations = entity.locations.all()
-
-        # Find all other entities connected to those events/locations
-        neighbor_q = Q(events__in=events) | Q(locations__in=locations)
-        return Entity.objects.filter(neighbor_q).distinct().exclude(pk=entity.pk)
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         source_id = request.query_params.get("sourceId")
@@ -464,75 +387,16 @@ class RelationshipPathAPIView(APIView):
             )
 
         try:
-            source_node = Entity.objects.get(pk=source_id)
-            target_node = Entity.objects.get(pk=target_id)
+            source_entity = Entity.objects.get(pk=source_id)
+            target_entity = Entity.objects.get(pk=target_id)
         except Entity.DoesNotExist:
             return Response(
                 {"error": "Source or target entity not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # BFS implementation
-        queue = [
-            (source_node, [source_node])
-        ]  # Queue stores (current_node, path_to_node)
-        visited = {source_node.pk}
-
-        while queue:
-            current_node, path = queue.pop(0)
-
-            if current_node == target_node:
-                # Path found, now format it for the response
-                formatted_path = []
-                for i in range(len(path) - 1):
-                    # For each step in the path, find the connection
-                    shared_events = Event.objects.filter(entities=path[i]).filter(
-                        entities=path[i + 1]
-                    )
-                    shared_locs = Location.objects.filter(
-                        associated_entities=path[i]
-                    ).filter(associated_entities=path[i + 1])
-
-                    connection = None
-                    if shared_events.exists():
-                        event = shared_events.first()
-                        connection = {
-                            "type": "event",
-                            "id": str(event.id),
-                            "name": event.title,
-                        }
-                    elif shared_locs.exists():
-                        loc = shared_locs.first()
-                        connection = {
-                            "type": "location",
-                            "id": str(loc.id),
-                            "name": loc.name,
-                        }
-
-                    formatted_path.append(
-                        {
-                            "entity": EntitySerializer(path[i]).data,
-                            "connection": connection,
-                        }
-                    )
-                # Add the final entity in the path
-                formatted_path.append(
-                    {"entity": EntitySerializer(path[-1]).data, "connection": None}
-                )
-
-                return Response({"path": formatted_path, "pathLength": len(path) - 1})
-
-            if len(path) > max_depth:
-                continue
-
-            for neighbor in self._get_neighbors(current_node):
-                if neighbor.pk not in visited:
-                    visited.add(neighbor.pk)
-                    new_path = list(path)
-                    new_path.append(neighbor)
-                    queue.append((neighbor, new_path))
-
-        return Response({"path": [], "pathLength": 0}, status=status.HTTP_200_OK)
+        path_data = services.find_shortest_path(source_entity, target_entity, max_depth)
+        return Response(path_data)
 
 
 # --- Import/Export API Views ---
@@ -542,6 +406,8 @@ class WorkspaceExportAPIView(APIView):
     """
     Exports a complete workspace and its related data as a JSON file.
     """
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         workspace_id = kwargs.get("id")
@@ -593,6 +459,7 @@ class WorkspaceImportAPIView(APIView):
     Imports a workspace from a JSON file.
     """
 
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
 
     @transaction.atomic

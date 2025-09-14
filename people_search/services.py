@@ -3,11 +3,11 @@ import os
 from typing import Any
 
 import requests
-from django.utils import timezone
 
 from ip_rotator.services import get_rotated_session
 
-from .models import PersonProfile, SearchQuery
+from .models import SearchQuery
+from .tasks import poll_and_process_search
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,8 @@ def initiate_reachstream_search(
         logger.info(
             f"Successfully initiated search for query {search_query.id}, batch ID: {search_query.reachstream_batch_id}"
         )
+        # Trigger the first polling task after a delay
+        poll_and_process_search.apply_async(args=[search_query.id], countdown=60)
     except requests.RequestException as e:
         logger.error(
             f"HTTP request failed for initiating search {search_query.id}: {e}"
@@ -70,32 +72,9 @@ def initiate_reachstream_search(
     return search_query
 
 
-def _process_and_store_results(search_query: SearchQuery, results_data: list):
+def trigger_poll_for_all_searches() -> str:
     """
-    Processes the raw results from ReachStream and stores them as PersonProfile objects.
-    """
-    if profiles_to_create := [
-        PersonProfile(
-            search_query=search_query,
-            full_name=item.get("contact_name"),
-            job_title=item.get("contact_job_title_1"),
-            company_name=item.get("company_company_name"),
-            email=item.get("contact_email_1"),
-            linkedin_url=item.get("contact_social_linkedin"),
-            raw_data=item,
-        )
-        for item in results_data
-    ]:
-        PersonProfile.objects.bulk_create(profiles_to_create)
-        logger.info(
-            f"Stored {len(profiles_to_create)} profiles for search query {search_query.id}"
-        )
-
-
-def poll_and_process_results() -> str:
-    """
-    Polls for results of processing searches and saves them to the database.
-    This would be run as a background task.
+    Triggers the Celery task to poll for all currently processing searches.
     """
     processing_queries = SearchQuery.objects.filter(
         status=SearchQuery.SearchStatus.PROCESSING
@@ -103,52 +82,9 @@ def poll_and_process_results() -> str:
     if not processing_queries.exists():
         return "No running queries to process."
 
-    api_key = os.environ.get("REACHSTREAM_API_KEY")
-    if not api_key:
-        return "Cannot poll results, REACHSTREAM_API_KEY is not set."
-
-    processed_count = 0
+    count = 0
     for query in processing_queries:
-        logger.info(
-            f"Polling for results for search query {query.id} with batch ID {query.reachstream_batch_id}"
-        )
-        try:
-            session = get_rotated_session(REACHSTREAM_BASE_URL)
-            url = f"{REACHSTREAM_BASE_URL}/api/v2/records/batch-process"
-            params = {"batch_process_id": query.reachstream_batch_id}
-            headers = {"X-API-Key": api_key}
+        poll_and_process_search.delay(query.id)
+        count += 1
 
-            response = session.get(url, params=params, headers=headers, timeout=30)
-
-            if response.status_code == 400 and "still being processed" in response.text:
-                logger.info(f"Query {query.id} is still processing.")
-                continue
-
-            response.raise_for_status()
-            data = response.json()
-
-            if data.get("status") != 200 or "data" not in data:
-                raise Exception(
-                    f"API returned an error: {data.get('message', 'Unknown error')}"
-                )
-
-            _process_and_store_results(query, data["data"])
-            query.status = SearchQuery.SearchStatus.COMPLETED
-            query.completed_at = timezone.now()
-            query.save()
-            processed_count += 1
-            logger.info(f"Search query {query.id} completed successfully.")
-        except requests.RequestException as e:
-            logger.error(f"HTTP request failed while polling for {query.id}: {e}")
-            query.status = SearchQuery.SearchStatus.FAILED
-            query.error_message = f"Polling failed: {e}"
-            query.save()
-        except Exception as e:
-            logger.error(
-                f"An unexpected error occurred while polling for {query.id}: {e}"
-            )
-            query.status = SearchQuery.SearchStatus.FAILED
-            query.error_message = f"An unexpected error occurred during polling: {e}"
-            query.save()
-
-    return f"Polling complete. Processed {processed_count} of {len(processing_queries)} running queries."
+    return f"Triggered polling for {count} queries."

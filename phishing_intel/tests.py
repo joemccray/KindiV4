@@ -1,7 +1,7 @@
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from django.core.cache import cache
+from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework import status
@@ -29,62 +29,37 @@ class PhishingIntelModelTest(TestCase):
 )
 @patch.dict(os.environ, {"PHISHTANK_API_KEY": "test-key"})
 class PhishingIntelServiceTest(TestCase):
-    def tearDown(self):
-        cache.clear()
+    @patch("phishing_intel.services.task_check_url_for_phishing.delay")
+    def test_check_url_triggers_task_for_new_url(self, mock_delay):
+        """
+        Test that the service function triggers the celery task for a URL not yet in the DB.
+        """
+        url = "http://new-phish-test.com"
+        services.check_url_for_phishing(url)
+        # The service function should create a pending record
+        self.assertTrue(URLCheck.objects.filter(url_to_check=url).exists())
+        # The celery task should be called to perform the actual check
+        mock_delay.assert_called_once_with(url)
 
-    @patch("phishing_intel.services.get_rotated_session")
-    def test_check_url_success_is_phish(self, mock_get_session):
-        mock_session = MagicMock()
-        mock_get_session.return_value = mock_session
+    @patch("phishing_intel.services.task_check_url_for_phishing.delay")
+    def test_check_url_returns_cache_and_does_not_trigger_task(self, mock_delay):
+        """
+        Test that if a URL is already in the DB, the service returns it and does not trigger a new task.
+        """
+        url = "http://existing-phish.com"
+        URLCheck.objects.create(url_to_check=url, is_phishing=True)
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {
-            "X-Request-Limit-Remaining": "49",
-            "X-Request-Limit-Reset": "300",
-        }
-        mock_response.json.return_value = {
-            "results": {
-                "in_database": True,
-                "url": "http://phish.com",
-                "phish_id": "123",
-                "phish_detail_page": "http://phishtank.com/phish_detail.php?phish_id=123",
-                "verified": "y",
-                "valid": "y",  # valid means it's an active phish
-            }
-        }
-        mock_session.post.return_value = mock_response
+        services.check_url_for_phishing(url)
 
-        result = services.check_url_for_phishing("http://phish.com")
-
-        self.assertTrue(result.is_phishing)
-        self.assertTrue(result.in_phishtank_database)
-        self.assertEqual(result.phishtank_id, 123)
-        self.assertEqual(cache.get(services.RATE_LIMIT_REMAINING_KEY), 49)
-
-    @patch("phishing_intel.services.get_rotated_session")
-    def test_check_url_rate_limit_works(self, mock_get_session):
-        # Setup cache to indicate rate limit is exceeded
-        cache.set(services.RATE_LIMIT_REMAINING_KEY, 0)
-        cache.set(services.RATE_LIMIT_RESET_KEY, 9999999999)  # A time in the future
-
-        with self.assertRaises(Exception) as cm:
-            services.check_url_for_phishing("http://another-url.com")
-
-        self.assertIn("PhishTank API rate limit exceeded", str(cm.exception))
-        mock_get_session.assert_not_called()
-
-    @patch("phishing_intel.services.get_rotated_session")
-    def test_local_cache_works(self, mock_get_session):
-        URLCheck.objects.create(url_to_check="http://cached-url.com", is_phishing=True)
-
-        result = services.check_url_for_phishing("http://cached-url.com")
-
-        self.assertTrue(result.is_phishing)
-        mock_get_session.assert_not_called()  # Should not make an API call
+        # The celery task should NOT be called
+        mock_delay.assert_not_called()
 
 
 class PhishingIntelApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("phishing_intel.views.services.check_url_for_phishing")
     def test_check_url_api(self, mock_check_url):
         test_url = "https://a-test-url.com/login"

@@ -2,6 +2,7 @@ import os
 import uuid
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
@@ -28,8 +29,11 @@ class PeopleSearchModelsTest(TestCase):
 
 @patch.dict(os.environ, {"REACHSTREAM_API_KEY": "test-key"})
 class PeopleSearchServiceTest(TestCase):
+    @patch("people_search.services.poll_and_process_search.apply_async")
     @patch("people_search.services.get_rotated_session")
-    def test_initiate_search_success(self, mock_get_session):
+    def test_initiate_search_success_triggers_task(
+        self, mock_get_session, mock_apply_async
+    ):
         # Mock the requests.Session object that the rotator returns
         mock_session = MagicMock()
         mock_get_session.return_value = mock_session
@@ -49,41 +53,33 @@ class PeopleSearchServiceTest(TestCase):
         self.assertEqual(search_query.status, SearchQuery.SearchStatus.PROCESSING)
         self.assertEqual(search_query.reachstream_batch_id, "12345-abcde")
         mock_session.post.assert_called_once()
+        # Assert that the celery task was called
+        mock_apply_async.assert_called_once_with(args=[search_query.id], countdown=60)
 
-    @patch("people_search.services.get_rotated_session")
-    def test_poll_and_process_success(self, mock_get_session):
-        # Setup: Create a query that is processing
-        query = SearchQuery.objects.create(
-            query_filter={},
-            status=SearchQuery.SearchStatus.PROCESSING,
-            reachstream_batch_id="12345-abcde",
+    @patch("people_search.tasks.poll_and_process_search.delay")
+    def test_trigger_poll_for_all_searches(self, mock_delay):
+        # Create some queries to be processed
+        SearchQuery.objects.create(
+            status=SearchQuery.SearchStatus.PROCESSING, query_filter={"a": "b"}
+        )
+        SearchQuery.objects.create(
+            status=SearchQuery.SearchStatus.PROCESSING, query_filter={"c": "d"}
+        )
+        SearchQuery.objects.create(
+            status=SearchQuery.SearchStatus.COMPLETED, query_filter={"e": "f"}
         )
 
-        mock_session = MagicMock()
-        mock_get_session.return_value = mock_session
+        services.trigger_poll_for_all_searches()
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "status": 200,
-            "data": [
-                {"contact_name": "Jane Doe", "contact_email_1": "jane@example.com"},
-                {"contact_name": "John Smith", "contact_email_1": "john@example.com"},
-            ],
-        }
-        mock_session.get.return_value = mock_response
-
-        services.poll_and_process_results()
-
-        query.refresh_from_db()
-        self.assertEqual(query.status, SearchQuery.SearchStatus.COMPLETED)
-        self.assertEqual(query.results.count(), 2)
-        self.assertEqual(PersonProfile.objects.count(), 2)
-        names = set(PersonProfile.objects.values_list("full_name", flat=True))
-        self.assertEqual(names, {"Jane Doe", "John Smith"})
+        # Should be called twice, once for each processing query
+        self.assertEqual(mock_delay.call_count, 2)
 
 
 class PeopleSearchApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("people_search.views.services.initiate_reachstream_search")
     def test_create_search_api(self, mock_initiate_search):
         test_uuid = uuid.uuid4()

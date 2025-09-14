@@ -1,6 +1,6 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from django.core.cache import cache
+from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework import status
@@ -33,62 +33,35 @@ class ThreatIntelModelsTest(TestCase):
     CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 )
 class ThreatIntelServiceTest(TestCase):
-    def tearDown(self):
-        cache.clear()
+    @patch("threat_intel.services.task_get_domain_intel.delay")
+    def test_get_domain_intel_triggers_task(self, mock_delay):
+        domain = "example.com"
+        services.get_domain_intel(domain)
+        # Check that an indicator is created immediately
+        self.assertTrue(Indicator.objects.filter(value=domain).exists())
+        # Check that the Celery task was called
+        mock_delay.assert_called_once_with(domain)
 
-    @patch("threat_intel.services.get_rotated_session")
-    def test_get_domain_intel_service(self, mock_get_session):
-        # Setup Mocks
-        mock_session = MagicMock()
-        mock_get_session.return_value = mock_session
+    @patch("threat_intel.services.task_get_ip_intel.delay")
+    def test_get_ip_intel_triggers_task(self, mock_delay):
+        ip = "8.8.8.8"
+        services.get_ip_intel(ip)
+        self.assertTrue(Indicator.objects.filter(value=ip).exists())
+        mock_delay.assert_called_once_with(ip)
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "status_code": "200",
-            "results": [{"domain": "sub.example.com"}],
-        }
-        mock_session.get.return_value = mock_response
-
-        # Action
-        indicator = services.get_domain_intel("example.com")
-
-        # Assertions
-        self.assertEqual(indicator.value, "example.com")
-        self.assertEqual(indicator.reports.count(), 5)  # 5 report types for domains
-
-        report = indicator.reports.get(report_type="subdomains")
-        self.assertEqual(report.raw_data[0]["domain"], "sub.example.com")
-
-        # Verify rate limit was checked 5 times
-        self.assertEqual(mock_session.get.call_count, 5)
-
-    @patch("threat_intel.services.get_rotated_session")
-    def test_rate_limiting(self, mock_get_session):
-        mock_session = MagicMock()
-        mock_get_session.return_value = mock_session
-
-        # Manually exhaust the rate limit
-        for _ in range(services.RATE_LIMIT_COUNT):
-            self.assertTrue(services._check_rate_limit())
-
-        # This call should now be blocked
-        self.assertFalse(services._check_rate_limit())
-
-        # Action: Call the service function for a new indicator
-        indicator = services.get_domain_intel("rate-limited-domain.com")
-
-        # Assertions: No API calls should have been made
-        mock_session.get.assert_not_called()
-
-        # The indicator is created, but no reports are fetched for it
-        self.assertEqual(indicator.reports.count(), 0)
-        self.assertTrue(
-            Indicator.objects.filter(value="rate-limited-domain.com").exists()
-        )
+    @patch("threat_intel.services.task_get_hash_intel.delay")
+    def test_get_hash_intel_triggers_task(self, mock_delay):
+        file_hash = "a" * 32
+        services.get_hash_intel(file_hash)
+        self.assertTrue(Indicator.objects.filter(value=file_hash).exists())
+        mock_delay.assert_called_once_with(file_hash)
 
 
 class ThreatIntelApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser")
+        self.client.force_authenticate(user=self.user)
+
     @patch("threat_intel.views.services.get_domain_intel")
     def test_domain_lookup_api(self, mock_get_domain_intel):
         cve_id = "test.com"
