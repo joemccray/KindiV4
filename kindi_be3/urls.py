@@ -27,4 +27,7 @@ urlpatterns = [
     path("api/v1/malware-intel/", include("malware_intel.urls")),
     path("api/v1/", include("vulnerability_intel.urls")),
     path("api/v1/serpapi/", include("serpapi_integration.urls")),
+    path("api/v1/users/", include("users.urls")),
+    # Core API endpoints
+    path("api/v1/", include("core.urls")),
 ]

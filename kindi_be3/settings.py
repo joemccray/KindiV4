@@ -45,13 +45,15 @@ INSTALLED_APPS = [
     # Third-party apps
     "rest_framework",
     # Local apps
-    "ip_rotator",
-    "people_search",
-    "threat_intel",
-    "phishing_intel",
-    "malware_intel",
-    "vulnerability_intel",
-    "serpapi_integration",
+    "ip_rotator.apps.IpRotatorConfig",
+    "people_search.apps.PeopleSearchConfig",
+    "threat_intel.apps.ThreatIntelConfig",
+    "phishing_intel.apps.PhishingIntelConfig",
+    "malware_intel.apps.MalwareIntelConfig",
+    "vulnerability_intel.apps.VulnerabilityIntelConfig",
+    "serpapi_integration.apps.SerpapiIntegrationConfig",
+    "core.apps.CoreConfig",
+    "users.apps.UsersConfig",
 ]
 
 MIDDLEWARE = [
