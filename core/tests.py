@@ -8,6 +8,331 @@ from rest_framework.test import APITestCase
 from .models import Activity, Entity, Event, Location, Workspace
 
 
+class SearchAPITests(APITestCase):
+    """
+    Tests for the various search API endpoints.
+    """
+
+    def setUp(self):
+        self.entity1 = Entity.objects.create(name="Project Chimera", type="asset")
+        self.entity2 = Entity.objects.create(
+            name="John Smith", type="person", attributes={"notes": "Related to Chimera"}
+        )
+        self.event1 = Event.objects.create(
+            title="Chimera Launch", timestamp=timezone.now()
+        )
+        self.location1 = Location.objects.create(
+            name="Site Chimera", latitude=1.0, longitude=1.0
+        )
+        self.search_url = reverse("global-search")
+
+    def test_global_search_requires_query(self):
+        """
+        Ensure the global search endpoint returns an error if no query is provided.
+        """
+        response = self.client.get(self.search_url)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_global_search_finds_all_types(self):
+        """
+        Ensure the global search returns results from all models by default.
+        """
+        response = self.client.get(self.search_url, {"query": "Chimera"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["entities"]), 2)
+        self.assertEqual(len(response.data["events"]), 1)
+        self.assertEqual(len(response.data["locations"]), 1)
+        self.assertEqual(response.data["totalResults"], 4)
+
+    def test_global_search_filters_by_type(self):
+        """
+        Ensure the global search can be limited to specific types.
+        """
+        response = self.client.get(
+            self.search_url, {"query": "Chimera", "types": "events,locations"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("entities", response.data)
+        self.assertEqual(len(response.data["events"]), 1)
+        self.assertEqual(len(response.data["locations"]), 1)
+        self.assertEqual(response.data["totalResults"], 2)
+
+    def test_global_search_no_results(self):
+        """
+        Ensure the global search returns empty lists for a query with no matches.
+        """
+        response = self.client.get(self.search_url, {"query": "nonexistent"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["entities"]), 0)
+        self.assertEqual(len(response.data["events"]), 0)
+        self.assertEqual(len(response.data["locations"]), 0)
+        self.assertEqual(response.data["totalResults"], 0)
+
+    def test_advanced_search_entity_type_filter(self):
+        """
+        Ensure advanced search can filter entities by type.
+        """
+        url = reverse("advanced-search")
+        response = self.client.get(url, {"query": "Smith", "entityTypes": "person"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["entities"]), 1)
+        self.assertEqual(response.data["entities"][0]["name"], "John Smith")
+
+        response = self.client.get(url, {"query": "Smith", "entityTypes": "asset"})
+        self.assertEqual(len(response.data["entities"]), 0)
+
+    def test_advanced_search_exact_and_case_sensitive(self):
+        """
+        Ensure advanced search can perform exact and case-sensitive searches.
+        Note: Case-sensitive 'contains' is not reliably supported on SQLite.
+        This test focuses on the 'exact' lookup.
+        """
+        url = reverse("advanced-search")
+        # Test exactMatch=true (case-insensitive by default)
+        response = self.client.get(url, {"query": "john smith", "exactMatch": "true"})
+        self.assertEqual(len(response.data["entities"]), 1)
+        response = self.client.get(url, {"query": "John", "exactMatch": "true"})
+        self.assertEqual(len(response.data["entities"]), 0)
+
+        # Test caseSensitive=true with exactMatch=true
+        response = self.client.get(
+            url, {"query": "john smith", "exactMatch": "true", "caseSensitive": "true"}
+        )
+        self.assertEqual(len(response.data["entities"]), 0)
+        response = self.client.get(
+            url, {"query": "John Smith", "exactMatch": "true", "caseSensitive": "true"}
+        )
+        self.assertEqual(len(response.data["entities"]), 1)
+
+    def test_advanced_search_date_filter(self):
+        """
+        Ensure advanced search can filter events by date.
+        """
+        url = reverse("advanced-search")
+        yesterday = (timezone.now() - datetime.timedelta(days=1)).isoformat()
+
+        Event.objects.create(
+            title="Old Event", timestamp=timezone.now() - datetime.timedelta(days=5)
+        )
+
+        response = self.client.get(url, {"query": "Event", "startDate": yesterday})
+        self.assertEqual(
+            len(response.data["events"]), 0
+        )  # The main "Chimera Launch" is not found by "Event"
+
+        response = self.client.get(url, {"query": "Launch", "startDate": yesterday})
+        self.assertEqual(len(response.data["events"]), 1)
+
+        response = self.client.get(url, {"query": "Launch", "endDate": yesterday})
+        self.assertEqual(len(response.data["events"]), 0)
+
+    def test_search_suggestions(self):
+        """
+        Ensure the suggestions endpoint returns a list of relevant strings.
+        """
+        url = reverse("search-suggestions")
+        # Create more data for suggestions
+        Entity.objects.create(name="Project Griffin", type="asset")
+        Event.objects.create(title="Griffin Test Flight", timestamp=timezone.now())
+
+        response = self.client.get(url, {"query": "Griffin"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("suggestions", response.data)
+        self.assertEqual(len(response.data["suggestions"]), 2)
+        self.assertIn("Project Griffin", response.data["suggestions"])
+        self.assertIn("Griffin Test Flight", response.data["suggestions"])
+
+    def test_search_suggestions_limit(self):
+        """
+        Ensure the maxSuggestions parameter is respected.
+        """
+        url = reverse("search-suggestions")
+        response = self.client.get(url, {"query": "Project", "maxSuggestions": 1})
+        self.assertEqual(len(response.data["suggestions"]), 1)
+
+
+class RelationshipAnalysisAPITests(APITestCase):
+    """
+    Tests for the relationship analysis API endpoints.
+    """
+
+    def setUp(self):
+        # Create a network of entities
+        self.e1 = Entity.objects.create(name="E1", type="person")
+        self.e2 = Entity.objects.create(name="E2", type="person")
+        self.e3 = Entity.objects.create(name="E3", type="organization")
+
+        # Create shared connections
+        self.loc1 = Location.objects.create(name="L1", latitude=1, longitude=1)
+        self.loc1.associated_entities.add(self.e1, self.e2)
+
+        self.event1 = Event.objects.create(title="Ev1", timestamp=timezone.now())
+        self.event1.entities.add(self.e1, self.e2)
+
+        self.event2 = Event.objects.create(title="Ev2", timestamp=timezone.now())
+        self.event2.entities.add(self.e1, self.e3)
+
+        self.strength_url = reverse("relationship-strength")
+
+    def test_strength_requires_params(self):
+        """
+        Ensure the strength endpoint returns an error if params are missing.
+        """
+        response = self.client.get(self.strength_url)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        response = self.client.get(self.strength_url, {"entity1": self.e1.pk})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_strength_calculation(self):
+        """
+        Ensure the strength calculation is correct.
+        """
+        # E1 and E2 share one event and one location
+        response = self.client.get(
+            self.strength_url, {"entity1": self.e1.pk, "entity2": self.e2.pk}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["strength"], 2)
+        self.assertEqual(len(response.data["connections"]["sharedEvents"]), 1)
+        self.assertEqual(
+            response.data["connections"]["sharedEvents"][0]["title"], "Ev1"
+        )
+        self.assertEqual(len(response.data["connections"]["sharedLocations"]), 1)
+
+        # E2 and E3 share nothing
+        response = self.client.get(
+            self.strength_url, {"entity1": self.e2.pk, "entity2": self.e3.pk}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["strength"], 0)
+
+    def test_path_finding(self):
+        """
+        Ensure the path finding endpoint returns the shortest path.
+        """
+        # E2 -> E1 -> E3
+        # E2 is connected to E1 via loc1/event1
+        # E1 is connected to E3 via event2
+        path_url = reverse("relationship-path")
+
+        # Test path from E2 to E3
+        response = self.client.get(
+            path_url, {"sourceId": self.e2.pk, "targetId": self.e3.pk}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["pathLength"], 2)
+        self.assertEqual(len(response.data["path"]), 3)  # Path includes 3 entities
+        self.assertEqual(response.data["path"][0]["entity"]["name"], "E2")
+        self.assertEqual(response.data["path"][1]["entity"]["name"], "E1")
+        self.assertEqual(response.data["path"][2]["entity"]["name"], "E3")
+        # Check that the connection is correctly identified
+        self.assertEqual(response.data["path"][1]["connection"]["name"], "Ev2")
+
+    def test_path_not_found(self):
+        """
+        Ensure the endpoint handles cases where no path exists.
+        """
+        e4 = Entity.objects.create(name="E4", type="asset")  # Unconnected
+        path_url = reverse("relationship-path")
+        response = self.client.get(
+            path_url, {"sourceId": self.e1.pk, "targetId": e4.pk}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["pathLength"], 0)
+        self.assertEqual(len(response.data["path"]), 0)
+
+    def test_network_graph(self):
+        """
+        Ensure the network endpoint returns a correct graph structure.
+        """
+        network_url = reverse("relationship-network")
+        response = self.client.get(network_url, {"entityIds": str(self.e2.pk)})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # With depth=1, starting from E2, we should find E1.
+        self.assertEqual(len(response.data["nodes"]), 2)
+        self.assertEqual(len(response.data["links"]), 1)
+        self.assertEqual(
+            response.data["links"][0]["value"], 2
+        )  # E1 and E2 share 2 items
+
+    def test_network_graph_depth(self):
+        """
+        Ensure the depth parameter is respected.
+        """
+        network_url = reverse("relationship-network")
+        # With depth=2, starting from E2, we should find E1 and then E3.
+        response = self.client.get(
+            network_url, {"entityIds": str(self.e2.pk), "depth": 2}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["nodes"]), 3)
+        self.assertEqual(len(response.data["links"]), 2)
+
+
+class ImportExportAPITests(APITestCase):
+    """
+    Tests for the import/export API endpoints.
+    """
+
+    def setUp(self):
+        self.workspace = Workspace.objects.create(name="Export Case")
+        self.entity = Entity.objects.create(name="E1", type="person")
+        self.event = Event.objects.create(title="Ev1", timestamp=timezone.now())
+        self.workspace.entities.add(self.entity)
+        self.workspace.events.add(self.event)
+
+    def test_export_workspace(self):
+        """
+        Ensure the export endpoint returns a correctly formatted JSON file.
+        """
+        url = reverse("workspace-export", kwargs={"id": self.workspace.pk})
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+
+        # Check the content of the exported data
+        json_data = response.json()
+        self.assertEqual(json_data["workspace"]["name"], "Export Case")
+        self.assertEqual(len(json_data["related_data"]["entities"]), 1)
+        self.assertEqual(json_data["related_data"]["entities"][0]["name"], "E1")
+        self.assertEqual(len(json_data["related_data"]["events"]), 1)
+
+    def test_import_workspace(self):
+        """
+        Ensure a workspace can be imported from a valid JSON file.
+        """
+        # First, export a workspace to get a valid file format
+        export_url = reverse("workspace-export", kwargs={"id": self.workspace.pk})
+        export_response = self.client.get(export_url)
+        json_content = export_response.content
+
+        # Now, import it
+        import_url = reverse("workspace-import")
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        upload_file = SimpleUploadedFile(
+            "import.json", json_content, content_type="application/json"
+        )
+
+        # We need to use a different client for file uploads
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        response = client.post(import_url, {"file": upload_file}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Workspace.objects.count(), 2)  # Original + imported
+
+        # Verify the imported workspace
+        new_workspace = Workspace.objects.get(pk=response.data["workspace"]["id"])
+        self.assertEqual(new_workspace.name, self.workspace.name)
+        self.assertEqual(new_workspace.entities.count(), 1)
+        self.assertEqual(new_workspace.events.count(), 1)
+        self.assertEqual(new_workspace.entities.first().name, self.entity.name)
+
+
 class WorkspaceAPITests(APITestCase):
     """
     Comprehensive tests for the Workspace API endpoint.

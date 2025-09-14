@@ -29,6 +29,17 @@ class WorkspaceSerializer(serializers.ModelSerializer):
     # The detail view can be customized later to nest serializers if needed.
     activities = ActivitySerializer(many=True, read_only=True)
 
+    # Explicitly define M2M fields to mark them as not required for validation during import.
+    entities = serializers.PrimaryKeyRelatedField(
+        queryset=Entity.objects.all(), many=True, required=False
+    )
+    events = serializers.PrimaryKeyRelatedField(
+        queryset=Event.objects.all(), many=True, required=False
+    )
+    locations = serializers.PrimaryKeyRelatedField(
+        queryset=Location.objects.all(), many=True, required=False
+    )
+
     class Meta:
         model = Workspace
         fields = [
@@ -135,7 +146,9 @@ class LocationSerializer(serializers.ModelSerializer):
     """
 
     # To match the API spec's "markerType" field name.
-    markerType = serializers.CharField(source="marker_type")
+    markerType = serializers.ChoiceField(
+        choices=Location.MarkerType.choices, source="marker_type"
+    )
 
     class Meta:
         model = Location

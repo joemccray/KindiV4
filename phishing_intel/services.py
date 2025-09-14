@@ -62,7 +62,9 @@ def check_url_for_phishing(url_to_check: str) -> URLCheck:
     """
     Checks a URL against the PhishTank database.
     """
-    if existing_check := URLCheck.objects.filter(url_to_check=url_to_check).first():
+    # Check our local cache first to avoid redundant API calls
+    existing_check = URLCheck.objects.filter(url_to_check=url_to_check).first()
+    if existing_check:
         logger.info(f"Returning cached result for {url_to_check}")
         return existing_check
 
@@ -95,7 +97,7 @@ def check_url_for_phishing(url_to_check: str) -> URLCheck:
         is_phishing = results.get("in_database") is True and results.get("valid") == "y"
         phish_id_str = results.get("phish_id")
 
-        return URLCheck.objects.create(
+        check_record = URLCheck.objects.create(
             url_to_check=url_to_check,
             is_phishing=is_phishing,
             in_phishtank_database=results.get("in_database", False),
@@ -103,6 +105,8 @@ def check_url_for_phishing(url_to_check: str) -> URLCheck:
             details_url=results.get("phish_detail_url"),
             raw_response=data,
         )
+        return check_record
+
     except requests.RequestException as e:
         logger.error(f"PhishTank API request failed for url {url_to_check}: {e}")
         raise  # Re-raise the exception to be handled by the caller
