@@ -10,7 +10,14 @@ class ActivitySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Activity
-        fields = "__all__"
+        fields = [
+            "id",
+            "workspace",
+            "timestamp",
+            "type",
+            "description",
+            "metadata",
+        ]
 
 
 class WorkspaceSerializer(serializers.ModelSerializer):

@@ -41,20 +41,21 @@ def initiate_reachstream_search(
         response.raise_for_status()
         data = response.json()
 
-        if data.get("status") != 200 or not data.get("data", {}).get(
+        if data.get("status") == 200 and data.get("data", {}).get(
             "unique_processing_id"
         ):
+            search_query.reachstream_batch_id = data["data"]["unique_processing_id"]
+            search_query.status = SearchQuery.SearchStatus.PROCESSING
+            logger.info(
+                f"Successfully initiated search for query {search_query.id}, batch ID: {search_query.reachstream_batch_id}"
+            )
+            # Trigger the first polling task after a delay
+            poll_and_process_search.apply_async(args=[search_query.id], countdown=60)
+        else:
             raise Exception(
                 f"API returned an error: {data.get('message', 'Unknown error')}"
             )
 
-        search_query.reachstream_batch_id = data["data"]["unique_processing_id"]
-        search_query.status = SearchQuery.SearchStatus.PROCESSING
-        logger.info(
-            f"Successfully initiated search for query {search_query.id}, batch ID: {search_query.reachstream_batch_id}"
-        )
-        # Trigger the first polling task after a delay
-        poll_and_process_search.apply_async(args=[search_query.id], countdown=60)
     except requests.RequestException as e:
         logger.error(
             f"HTTP request failed for initiating search {search_query.id}: {e}"

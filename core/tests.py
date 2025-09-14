@@ -408,9 +408,10 @@ class WorkspaceAPITests(APITestCase):
         """
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(len(response.data["results"]), 1)
 
-        summary_data = response.data[0]
+        summary_data = response.data["results"][0]
         self.assertEqual(summary_data["name"], "Case Alpha")
         self.assertIn("entityCount", summary_data)
         self.assertEqual(summary_data["entityCount"], 1)
@@ -501,10 +502,11 @@ class EventAPITests(APITestCase):
         """
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(len(response.data["results"]), 2)
         # Events are ordered by -timestamp
-        self.assertEqual(response.data[0]["title"], "Follow-up Call")
-        self.assertEqual(response.data[1]["title"], "Initial Meeting")
+        self.assertEqual(response.data["results"][0]["title"], "Follow-up Call")
+        self.assertEqual(response.data["results"][1]["title"], "Initial Meeting")
 
     def test_retrieve_event(self):
         """
@@ -592,9 +594,10 @@ class LocationAPITests(APITestCase):
         """
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
-        self.assertEqual(response.data[0]["name"], "Abandoned Warehouse")
-        self.assertEqual(response.data[1]["name"], "Safe House Alpha")
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(len(response.data["results"]), 2)
+        self.assertEqual(response.data["results"][0]["name"], "Abandoned Warehouse")
+        self.assertEqual(response.data["results"][1]["name"], "Safe House Alpha")
 
     def test_retrieve_location(self):
         """
@@ -679,10 +682,11 @@ class EntityAPITests(APITestCase):
         """
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(len(response.data["results"]), 2)
         # Names should be in reverse order of creation due to model ordering
-        self.assertEqual(response.data[0]["name"], "Acme Corp")
-        self.assertEqual(response.data[1]["name"], "John Doe")
+        self.assertEqual(response.data["results"][0]["name"], "Acme Corp")
+        self.assertEqual(response.data["results"][1]["name"], "John Doe")
 
     def test_retrieve_entity(self):
         """

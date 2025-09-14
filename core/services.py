@@ -42,7 +42,8 @@ def _get_entity_neighbors(entity: Entity) -> list[Entity]:
     events = entity.events.all()
     locations = entity.locations.all()
     neighbor_q = Q(events__in=events) | Q(locations__in=locations)
-    return Entity.objects.filter(neighbor_q).distinct().exclude(pk=entity.pk)
+    neighbors = Entity.objects.filter(neighbor_q).distinct().exclude(pk=entity.pk)
+    return neighbors
 
 
 def find_shortest_path(
